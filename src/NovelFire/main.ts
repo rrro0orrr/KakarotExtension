@@ -35,6 +35,26 @@ import type { CheerioAPI } from "cheerio";
 
 const baseUrl = "https://novelfire.net";
 
+const VOID_ELEMENTS =
+  "area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr";
+const VOID_ELEMENT_REGEX = new RegExp(`<(${VOID_ELEMENTS})((?:\\s+[^>]*?)?)\\s*/?>`, "gi");
+
+// Turns every void element into a self-closing tag so the chapter is valid XHTML for Readium.
+function fixVoidElements(html: string): string {
+  return html.replace(VOID_ELEMENT_REGEX, (_match, tag: string, attributes: string) => {
+    const attrs = attributes.trim();
+    return attrs ? `<${tag.toLowerCase()} ${attrs} />` : `<${tag.toLowerCase()} />`;
+  });
+}
+
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 // Accepts "/book/slug", "/novel/slug/chapter-1" or a full URL on any mirror domain
 // and returns just "slug" or "slug/chapter-1".
 function toId(href: string): string {
@@ -309,7 +329,10 @@ export class NovelFireExtension implements NovelFireImplementation {
       const content = this.extractChapterText(page.$);
 
       if (content !== "") {
-        const html = `<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>${content}</body></html>`;
+        const heading = chapter.title ? `<h2>${escapeHtml(chapter.title)}</h2>` : "";
+        // Readium parses chapters as XHTML, so bare void tags like <br> must be self-closed
+        const body = fixVoidElements(heading + "\n" + content);
+        const html = `<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>${body}</body></html>`;
         return {
           mangaId: chapter.sourceManga.mangaId,
           id: chapter.chapterId,
@@ -318,47 +341,22 @@ export class NovelFireExtension implements NovelFireImplementation {
         };
       }
 
-    const $ = await this.fetchCheerio(request);
+      const title = page.$("title").first().text().trim().slice(0, 80);
+      trail.push(`${url} -> ${page.finalUrl} [HTTP ${page.status}] "${title}"`);
 
-    // Strip ads, scripts and site chrome that can end up inside the content node
-    $(".nf-ads, .ads, .adsbygoogle, script, style, iframe, ins, noscript").remove();
-
-    // The content container has changed names over time, so try a few
-    const selectors = ["#content", "#chapter-container", ".chapter-content", "#chapter-content", ".chapter-body"];
-    let content = "";
-    for (const selector of selectors) {
-      const node = $(selector).first();
-      if (node.length === 0) continue;
-      const inner = (node.html() ?? "").trim();
-      if (node.text().trim().length > 0 && inner.length > 0) {
-        content = inner;
-        break;
-      }
+      const next = this.findRedirectTarget(page.$, page.html, page.finalUrl);
+      if (!next || next === url) break;
+      url = next;
     }
-
-    // Last resort: collect every non-empty paragraph on the page
-    if (content === "") {
-      content = $("p")
-        .map((_, el) => ($(el).text().trim() ? $.html(el) : ""))
-        .toArray()
-        .join("");
-    }
-
-    content = content.replace(/&nbsp;/g, " ").trim();
 
     // Throw instead of returning an empty page so the reader shows an error, not a blank screen
-    if (content === "") {
-      throw new Error(
-        `NovelFire: no chapter text found at ${request.url}. The site layout may have changed or the request was blocked.`,
-      );
-    }
-
-    const html = `<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>${content}</body></html>`;
+    throw new Error(`NovelFire: no chapter text found. Tried: ${trail.join(" | ")}`);
+  }
 
   extractChapterText($: CheerioAPI): string {
     $(".nf-ads, .ads, .adsbygoogle, script, style, iframe, ins, noscript").remove();
 
-    for (const selector of ["#content", ".chapter-content", "#chapter-content", ".chapter-body"]) {
+    for (const selector of ["#content", "#chapter-container", ".chapter-content", "#chapter-content", ".chapter-body"]) {
       const node = $(selector).first();
       if (node.length === 0 || node.text().trim() === "") continue;
       return (node.html() ?? "").replace(/&nbsp;/g, " ").trim();
