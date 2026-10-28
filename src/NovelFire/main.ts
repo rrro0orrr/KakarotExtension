@@ -14,7 +14,7 @@ import {
   DiscoverSectionType,
   Extension,
   MangaProviding,
-  NovelChapter,
+  ChapterDetails,
   Metadata,
   PagedResults,
   Request,
@@ -62,6 +62,39 @@ function toId(href: string): string {
   return (match?.[1] ?? href).replace(/^\/+|\/+$/g, "");
 }
 
+// Resolves relative or protocol-less image paths against the site.
+function absoluteUrl(path: string | undefined): string {
+  if (!path) return "";
+  if (/^https?:\/\//i.test(path)) return path;
+  if (path.startsWith("//")) return `https:${path}`;
+  return path.startsWith("/") ? `${baseUrl}${path}` : `${baseUrl}/${path}`;
+}
+
+function mapStatus(label: string): string {
+  switch (label.trim().toLowerCase()) {
+    case "ongoing":
+      return "Ongoing";
+    case "completed":
+      return "Completed";
+    case "hiatus":
+      return "Hiatus";
+    case "dropped":
+    case "cancelled":
+      return "Dropped";
+    default:
+      return "Unknown";
+  }
+}
+
+const ADULT_GENRES = ["adult", "smut", "ecchi", "hentai", "yaoi", "yuri", "mature"];
+
+function mapContentRating(genres: string[]): ContentRating {
+  const lower = genres.map((g) => g.toLowerCase());
+  if (lower.some((g) => g === "adult" || g === "smut" || g === "hentai")) return ContentRating.ADULT;
+  if (lower.some((g) => ADULT_GENRES.includes(g))) return ContentRating.MATURE;
+  return ContentRating.EVERYONE;
+}
+
 type NovelFireImplementation = Extension &
   SearchResultsProviding &
   MangaProviding &
@@ -86,13 +119,20 @@ export class NovelFireExtension implements NovelFireImplementation {
     this.cookieStorageInterceptor.registerInterceptor();
   }
 
-  async saveCloudflareBypassCookies(cookies: Cookie[]): Promise<void> {
-    for (const cookie of this.cookieStorageInterceptor.cookies) {
-      this.cookieStorageInterceptor.deleteCookie(cookie);
-    }
+  async cloudflareBypassCompleted(
+    _request: unknown,
+    cookies: Cookie[],
+    _localStorage: Record<string, string>,
+  ): Promise<void> {
     for (const cookie of cookies) {
       if (cookie.expires && cookie.expires.getTime() <= Date.now()) continue;
-      this.cookieStorageInterceptor.setCookie(cookie);
+      if (
+        cookie.name.startsWith("cf") ||
+        cookie.name.startsWith("_cf") ||
+        cookie.name.startsWith("__cf")
+      ) {
+        this.cookieStorageInterceptor.setCookie(cookie);
+      }
     }
   }
 
@@ -211,21 +251,35 @@ export class NovelFireExtension implements NovelFireImplementation {
       url: new URLBuilder(baseUrl).addPath("book").addPath(mangaId).build(),
       method: "GET",
     };
-    const $ = (await this.fetchCheerio(request));
-    const title = String($(".novel-title").text()).trim();
-    const coverUrl = String($(".novel-header img").attr("src")) || "";
+    const $ = await this.fetchCheerio(request);
+
+    const cover = $(".cover > img").first();
+    const title =
+      $(".novel-title").first().text().trim() || (cover.attr("alt") ?? "").trim();
+    const coverUrl = absoluteUrl(cover.attr("data-src") ?? cover.attr("src"));
+
     const genres: string[] = [];
     $(".categories .property-item").each((_, el) => {
-      genres.push(String($(el).text()).trim());
+      const genre = $(el).text().trim();
+      if (genre) genres.push(genre);
     });
     const tags: string[] = [];
     $(".tag").each((_, el) => {
-      tags.push(String($(el).text()).trim());
+      const tag = $(el).text().trim();
+      if (tag) tags.push(tag);
     });
-    const rating = parseFloat(String($(".rating").text()).trim()) || 1;
-    const author = String($(".property-item").first().text()).trim();
-    const status = String($(".completed").text()).trim() || "UNKNOWN";
-    const description = String($(".content.expand-wrapper").text()).trim();
+
+    const author = $(".author .property-item > span").first().text().trim();
+    const status = mapStatus(
+      $(".header-stats .ongoing").first().text() ||
+        $(".header-stats .completed").first().text() ||
+        "",
+    );
+    const rating = parseFloat($(".nub").first().text().trim());
+
+    const summary = $(".summary .content").first();
+    summary.find(".expand").remove();
+    const description = Application.decodeHTMLEntities(summary.text().trim());
 
     const tagGroups: TagSection[] = [];
     if (genres.length > 0) {
@@ -256,11 +310,13 @@ export class NovelFireExtension implements NovelFireImplementation {
         secondaryTitles: [],
         thumbnailUrl: coverUrl,
         synopsis: description,
-        rating: rating,
-        contentRating: ContentRating.EVERYONE,
+        ...(Number.isFinite(rating) ? { rating } : {}),
+        ...(author ? { author } : {}),
+        contentRating: mapContentRating(genres),
         contentType: "novel",
-        status: status as "ONGOING" | "COMPLETED" | "UNKNOWN",
-        tagGroups: tagGroups,
+        status,
+        tagGroups,
+        shareUrl: this.getMangaShareUrl(mangaId),
       },
     };
   }
@@ -286,20 +342,24 @@ export class NovelFireExtension implements NovelFireImplementation {
       if (items.length === 0) break;
 
       items.each((_, el) => {
-        const li = $(el);
-        const a = li.find("a");
-        const url = String(a.attr("href")) || "";
-        const title = String(a.attr("title")) || a.text().trim();
-        const chapterNo =
-          parseFloat(String(a.find(".chapter-no").text()).trim()) || undefined;
-        const createdAt = String(a.find("time").attr("datetime"));
-        const chapterId = (url.split("/book/")[1] || url).split(/[?#]/)[0] ?? url;
+        const a = $(el).find("a").first();
+        const href = a.attr("href") ?? "";
+        if (!href) return;
+
+        const chapterId = toId(href);
+        const title = (a.attr("title") ?? a.text()).trim();
+        const parsedNo = parseFloat(a.find(".chapter-no").text().trim());
+        const datetime = a.find("time").attr("datetime");
+        const publishDate = datetime ? new Date(datetime) : undefined;
+
         chapters.push({
-          chapterId: chapterId,
-          title: title,
+          chapterId,
+          title,
           sourceManga,
-          chapNum: chapterNo ?? 0,
-          publishDate: createdAt ? new Date(createdAt) : undefined,
+          // Fall back to the chapter's position so sorting and read tracking still work
+          chapNum: Number.isFinite(parsedNo) ? parsedNo : chapters.length + 1,
+          publishDate:
+            publishDate && !Number.isNaN(publishDate.getTime()) ? publishDate : undefined,
           volume: 0,
           langCode: "en",
           version: "1",
@@ -314,7 +374,7 @@ export class NovelFireExtension implements NovelFireImplementation {
     return chapters;
   }
 
-  async getChapterDetails(chapter: Chapter): Promise<NovelChapter> {
+  async getChapterDetails(chapter: Chapter): Promise<ChapterDetails> {
     let url = new URLBuilder(baseUrl)
       .addPath("book")
       .addPath(chapter.chapterId)
@@ -373,7 +433,7 @@ export class NovelFireExtension implements NovelFireImplementation {
       /(?:window\.|document\.|top\.)?location(?:\.href)?\s*(?:=|\.replace\(|\.assign\()\s*['"]([^'"]+)['"]/,
     )?.[1];
 
-    const target = fromMeta ?? fromScript;
+    const target = (fromMeta ?? fromScript)?.replace(/\\\//g, "/");
     if (!target || target.startsWith("#") || target.startsWith("javascript:")) return undefined;
     if (/^https?:\/\//i.test(target)) return target;
 
