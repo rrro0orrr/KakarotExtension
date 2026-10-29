@@ -18,6 +18,7 @@ import {
   Metadata,
   PagedResults,
   Request,
+  Response,
   SearchQuery,
   SearchResultItem,
   SearchResultsProviding,
@@ -34,6 +35,11 @@ import { NovelFireSearchForm } from "./forms/SearchForm";
 import type { CheerioAPI } from "cheerio";
 
 const baseUrl = "https://novelfire.net";
+
+// Cloudflare answers bursts with HTTP 429 ("Access denied", error 1015), so back off and retry.
+const MAX_RATE_LIMIT_RETRIES = 3;
+const MAX_RETRY_WAIT_SECONDS = 30;
+const MAX_CHAPTER_PAGES = 200;
 
 const VOID_ELEMENTS =
   "area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr";
@@ -105,7 +111,7 @@ type NovelFireImplementation = Extension &
 export class NovelFireExtension implements NovelFireImplementation {
   requestManager = new NovelFireInterceptor("main");
   globalRateLimiter = new BasicRateLimiter("rateLimiter", {
-    numberOfRequests: 10,
+    numberOfRequests: 2,
     bufferInterval: 1,
     ignoreImages: true,
   });
@@ -192,7 +198,7 @@ export class NovelFireExtension implements NovelFireImplementation {
 
     if (query.title && query.title.trim() !== "") {
       const searchUrl = `${baseUrl}/ajax/searchLive?keyword=${encodeURIComponent(query.title.trim())}&type=title`;
-      const [, data] = await Application.scheduleRequest({ url: searchUrl, method: "GET" });
+      const [, data] = await this.scheduleRequest({ url: searchUrl, method: "GET" });
       const jsonString = Application.arrayBufferToUTF8String(data);
       const result = JSON.parse(jsonString) as NovelFireResult;
       const items: SearchResultItem[] = (result?.data ?? []).map((item) => ({
@@ -324,9 +330,10 @@ export class NovelFireExtension implements NovelFireImplementation {
   async getChapters(sourceManga: SourceManga): Promise<Chapter[]> {
     const mangaId = sourceManga.mangaId;
     const chapters: Chapter[] = [];
+    const seenIds = new Set<string>();
     let page = 1;
 
-    while (true) {
+    while (page <= MAX_CHAPTER_PAGES) {
       const request = {
         url: new URLBuilder(baseUrl)
           .addPath("book")
@@ -341,12 +348,16 @@ export class NovelFireExtension implements NovelFireImplementation {
       const items = $(".chapter-list li");
       if (items.length === 0) break;
 
+      let added = 0;
       items.each((_, el) => {
         const a = $(el).find("a").first();
         const href = a.attr("href") ?? "";
         if (!href) return;
 
         const chapterId = toId(href);
+        if (seenIds.has(chapterId)) return;
+        seenIds.add(chapterId);
+        added++;
         const title = (a.attr("title") ?? a.text()).trim();
         const parsedNo = parseFloat(a.find(".chapter-no").text().trim());
         const datetime = a.find("time").attr("datetime");
@@ -366,8 +377,9 @@ export class NovelFireExtension implements NovelFireImplementation {
         });
       });
 
-      const hasNextPage = !!$(".pagination .page-item.active + .page-item").length;
-      if (!hasNextPage) break;
+      // Stop if the site keeps serving the same page, otherwise this loop hammers it into a 429
+      const hasNextPage = !!$(".pagination .page-item.active + .page-item:not(.disabled)").length;
+      if (!hasNextPage || added === 0) break;
       page++;
     }
 
@@ -618,6 +630,27 @@ export class NovelFireExtension implements NovelFireImplementation {
     };
   }
 
+  // Wraps Application.scheduleRequest and retries on HTTP 429, honouring Retry-After when present.
+  async scheduleRequest(request: Request): Promise<[Response, ArrayBuffer]> {
+    for (let attempt = 0; ; attempt++) {
+      const [response, data] = await Application.scheduleRequest(request);
+      if (response.status !== 429) return [response, data];
+
+      if (attempt >= MAX_RATE_LIMIT_RETRIES) {
+        throw new Error(
+          "NovelFire: the site is rate-limiting requests (HTTP 429). Wait a minute and try again.",
+        );
+      }
+
+      const retryAfter = Object.entries(response.headers ?? {}).find(
+        ([key]) => key.toLowerCase() === "retry-after",
+      )?.[1];
+      const parsed = parseInt(retryAfter ?? "", 10);
+      const wait = Number.isFinite(parsed) && parsed > 0 ? parsed : 2 ** (attempt + 1);
+      await Application.sleep(Math.min(wait, MAX_RETRY_WAIT_SECONDS));
+    }
+  }
+
   checkCloudflareStatus(status: number): void {
     if (status == 503 || status == 403) {
       throw new CloudflareError({ url: baseUrl, method: "GET" });
@@ -630,7 +663,7 @@ export class NovelFireExtension implements NovelFireImplementation {
     finalUrl: string;
     status: number;
   }> {
-    const [response, data] = await Application.scheduleRequest(request);
+    const [response, data] = await this.scheduleRequest(request);
     this.checkCloudflareStatus(response.status);
     const html = Application.arrayBufferToUTF8String(data);
     const dom = htmlparser2.parseDocument(html);
@@ -643,7 +676,7 @@ export class NovelFireExtension implements NovelFireImplementation {
   }
 
   async fetchCheerio(request: Request): Promise<CheerioAPI> {
-    const [response, data] = await Application.scheduleRequest(request);
+    const [response, data] = await this.scheduleRequest(request);
     this.checkCloudflareStatus(response.status);
     const htmlStr = Application.arrayBufferToUTF8String(data);
     const dom = htmlparser2.parseDocument(htmlStr);
