@@ -5,50 +5,148 @@ export interface NovelFireMetadata {
 }
 
 export interface NovelFireSearchMeta {
-  genres: Record<string, "included" | "excluded">;
-  sort: string;
+  languages: string[];
+  genres: string[];
+  genreMatch: string;
+  chapters: string;
+  ratingMatch: string;
+  rating: string;
   status: string;
+  tags: string;
+  tagMatch: string;
+  excludedTags: string;
 }
 
-export const GENRES = [
-  { id: "genre-action", label: "Action" },
-  { id: "genre-adventure", label: "Adventure" },
-  { id: "genre-comedy", label: "Comedy" },
-  { id: "genre-drama", label: "Drama" },
-  { id: "genre-fantasy", label: "Fantasy" },
-  { id: "genre-horror", label: "Horror" },
-  { id: "genre-josei", label: "Josei" },
-  { id: "genre-martial-arts", label: "Martial Arts" },
-  { id: "genre-mature", label: "Mature" },
-  { id: "genre-mecha", label: "Mecha" },
-  { id: "genre-mystery", label: "Mystery" },
-  { id: "genre-psychological", label: "Psychological" },
-  { id: "genre-romance", label: "Romance" },
-  { id: "genre-school-life", label: "School Life" },
-  { id: "genre-sci-fi", label: "Sci-Fi" },
-  { id: "genre-seinen", label: "Seinen" },
-  { id: "genre-shoujo", label: "Shoujo" },
-  { id: "genre-shounen", label: "Shounen" },
-  { id: "genre-slice-of-life", label: "Slice of Life" },
-  { id: "genre-sport", label: "Sport" },
-  { id: "genre-supernatural", label: "Supernatural" },
-  { id: "genre-tragedy", label: "Tragedy" },
-  { id: "genre-wuxia", label: "Wuxia" },
-  { id: "genre-xianxia", label: "Xianxia" },
-  { id: "genre-xuanhuan", label: "Xuanhuan" },
+// Mirrors the filters on https://novelfire.net/search-adv
+export const LANGUAGES = [
+  { id: "1", label: "Chinese Novel" },
+  { id: "3", label: "Japanese Novel" },
+  { id: "4", label: "English Novel" },
 ];
 
-export const SORTS = [
-  { id: "sort-latest-release", label: "Latest Release" },
-  { id: "sort-popular", label: "Popular" },
-  { id: "sort-new", label: "New" },
+export const GENRES = [
+  { id: "3", label: "Action" },
+  { id: "28", label: "Adult" },
+  { id: "4", label: "Adventure" },
+  { id: "46", label: "Anime" },
+  { id: "47", label: "Arts" },
+  { id: "5", label: "Comedy" },
+  { id: "24", label: "Drama" },
+  { id: "44", label: "Eastern" },
+  { id: "26", label: "Ecchi" },
+  { id: "48", label: "Fan-fiction" },
+  { id: "6", label: "Fantasy" },
+  { id: "19", label: "Game" },
+  { id: "25", label: "Gender Bender" },
+  { id: "7", label: "Harem" },
+  { id: "12", label: "Historical" },
+  { id: "37", label: "Horror" },
+  { id: "49", label: "Isekai" },
+  { id: "2", label: "Josei" },
+  { id: "45", label: "Lgbt+" },
+  { id: "50", label: "Magic" },
+  { id: "51", label: "Magical realism" },
+  { id: "52", label: "Manhua" },
+  { id: "15", label: "Martial Arts" },
+  { id: "8", label: "Mature" },
+  { id: "34", label: "Mecha" },
+  { id: "53", label: "Military" },
+  { id: "54", label: "Modern life" },
+  { id: "55", label: "Movies" },
+  { id: "16", label: "Mystery" },
+  { id: "64", label: "Other" },
+  { id: "9", label: "Psychological" },
+  { id: "56", label: "Realistic fiction" },
+  { id: "43", label: "Reincarnation" },
+  { id: "1", label: "Romance" },
+  { id: "21", label: "School Life" },
+  { id: "20", label: "Sci-fi" },
+  { id: "10", label: "Seinen" },
+  { id: "38", label: "Shoujo" },
+  { id: "57", label: "Shoujo ai" },
+  { id: "17", label: "Shounen" },
+  { id: "39", label: "Shounen Ai" },
+  { id: "13", label: "Slice of Life" },
+  { id: "29", label: "Smut" },
+  { id: "42", label: "Sports" },
+  { id: "18", label: "Supernatural" },
+  { id: "58", label: "System" },
+  { id: "32", label: "Tragedy" },
+  { id: "63", label: "Urban" },
+  { id: "59", label: "Urban life" },
+  { id: "60", label: "Video games" },
+  { id: "61", label: "War" },
+  { id: "31", label: "Wuxia" },
+  { id: "23", label: "Xianxia" },
+  { id: "22", label: "Xuanhuan" },
+  { id: "14", label: "Yaoi" },
+  { id: "62", label: "Yuri" },
+];
+
+export const GENRE_MATCHES = [
+  { id: "and", label: "AND (all selected)" },
+  { id: "or", label: "OR (any selected)" },
+  { id: "exclude", label: "EXCLUDE (none selected)" },
+];
+
+export const CHAPTER_COUNTS = [
+  { id: "0", label: "All" },
+  { id: "1,49", label: "<50" },
+  { id: "50,100", label: "50-100" },
+  { id: "100,200", label: "100-200" },
+  { id: "200,500", label: "200-500" },
+  { id: "500,1000", label: "500-1000" },
+  { id: "1001,1000000", label: ">1000" },
+];
+
+export const RATING_MATCHES = [
+  { id: "min", label: "Minimum" },
+  { id: "max", label: "Maximum" },
+];
+
+export const RATINGS = [
+  { id: "0", label: "None" },
+  { id: "1", label: "1" },
+  { id: "2", label: "2" },
+  { id: "3", label: "3" },
+  { id: "4", label: "4" },
+  { id: "5", label: "5" },
 ];
 
 export const STATUSES = [
-  { id: "status-all", label: "All" },
-  { id: "status-ongoing", label: "Ongoing" },
-  { id: "status-completed", label: "Completed" },
+  { id: "-1", label: "All" },
+  { id: "1", label: "Completed" },
+  { id: "0", label: "Ongoing" },
 ];
+
+export const TAG_MATCHES = [
+  { id: "and", label: "AND (all tags)" },
+  { id: "or", label: "OR (any tag)" },
+];
+
+export const SORTS = [
+  { id: "date", label: "Last Updated (Newest)" },
+  { id: "rank-top", label: "Rank (Top)" },
+  { id: "rating-score-top", label: "Rating Score (Top)" },
+  { id: "review", label: "Review Count (Most)" },
+  { id: "comment", label: "Comment Count (Most)" },
+  { id: "bookmark", label: "Bookmark Count (Most)" },
+  { id: "today-view", label: "Today Views (Most)" },
+  { id: "monthly-view", label: "Monthly Views (Most)" },
+  { id: "total-view", label: "Total Views (Most)" },
+  { id: "chapter-count-most", label: "Chapter Count (Most)" },
+  { id: "abc", label: "Title (A>Z)" },
+  { id: "cba", label: "Title (Z>A)" },
+];
+
+export interface NovelFireTag {
+  id: number;
+  name: string;
+}
+
+export interface NovelFireTagResult {
+  data: NovelFireTag[];
+}
 
 export interface NovelFireResultItem {
   image: string;

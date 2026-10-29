@@ -30,8 +30,15 @@ import * as cheerio from "cheerio";
 import * as htmlparser2 from "htmlparser2";
 import { URLBuilder } from "../utils/url-builder/base";
 import { NovelFireInterceptor } from "./interceptors";
-import { type NovelFireMetadata, type NovelFireResult, type NovelFireSearchMeta, SORTS } from "./model";
-import { NovelFireSearchForm } from "./forms/SearchForm";
+import {
+  type NovelFireMetadata,
+  type NovelFireResult,
+  type NovelFireSearchMeta,
+  type NovelFireTag,
+  type NovelFireTagResult,
+  SORTS,
+} from "./model";
+import { DEFAULT_SEARCH_META, NovelFireSearchForm } from "./forms/SearchForm";
 import type { CheerioAPI } from "cheerio";
 
 const baseUrl = "https://novelfire.net";
@@ -210,33 +217,46 @@ export class NovelFireExtension implements NovelFireImplementation {
       return { items };
     }
 
-    const searchMeta = (query.metadata as { searchMeta?: NovelFireSearchMeta } | undefined)?.searchMeta;
-    const genre = Object.entries(searchMeta?.genres ?? {}).find(([, s]) => s === "included")?.[0] ?? "genre-all";
-    const sort = sortingOption?.id ?? "sort-latest-release";
-    const status = searchMeta?.status ?? "status-all";
-
-    const request = {
-      url: new URLBuilder(baseUrl)
-        .addPath(genre)
-        .addPath(sort)
-        .addPath(status)
-        .addPath("all-novel")
-        .addQuery("page", String(page))
-        .build(),
-      method: "GET",
+    const searchMeta = {
+      ...DEFAULT_SEARCH_META,
+      ...(query.metadata as { searchMeta?: Partial<NovelFireSearchMeta> } | undefined)?.searchMeta,
     };
+    const [tagIds, excludedTagIds] = await Promise.all([
+      this.resolveTagIds(searchMeta.tags),
+      this.resolveTagIds(searchMeta.excludedTags),
+    ]);
 
-    const $ = await this.fetchCheerio(request);
+    // Same query string the site's /search-adv form submits
+    const params: [string, string][] = [
+      ...searchMeta.languages.map((id): [string, string] => ["country_id[]", id]),
+      ["ctgcon", searchMeta.genreMatch],
+      ...searchMeta.genres.map((id): [string, string] => ["categories[]", id]),
+      ["totalchapter", searchMeta.chapters],
+      ["ratcon", searchMeta.ratingMatch],
+      ["rating", searchMeta.rating],
+      ["status", searchMeta.status],
+      ["sort", sortingOption?.id ?? "date"],
+      ["tagcon", searchMeta.tagMatch],
+      ...tagIds.map((id): [string, string] => ["tags[]", id]),
+      ...excludedTagIds.map((id): [string, string] => ["tags_excluded[]", id]),
+      ["page", String(page)],
+    ];
+    const queryString = params
+      .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+      .join("&");
+
+    const $ = await this.fetchCheerio({ url: `${baseUrl}/search-adv?${queryString}`, method: "GET" });
     const collectedIds: string[] = [];
     const items: SearchResultItem[] = [];
 
     $(".novel-item").each((_, el) => {
       const novel = $(el);
-      const a = novel.find("a");
+      const link = novel.find(".novel-title a").first();
+      const a = link.length ? link : novel.find("a").first();
       const url = a.attr("href") || "";
-      const title = a.attr("title") || a.text().trim();
-      const imgurl = novel.find("img").attr("data-src") || novel.find("img").attr("src") || "";
-      const coverUrl = imgurl.startsWith("http") ? imgurl : `${baseUrl}${imgurl}`;
+      const title = (a.attr("title") || a.text()).trim();
+      const img = novel.find("img").first();
+      const coverUrl = absoluteUrl(img.attr("data-src") || img.attr("src"));
       const mangaId = toId(url);
       if (title && mangaId && !collectedIds.includes(mangaId)) {
         collectedIds.push(mangaId);
@@ -244,7 +264,8 @@ export class NovelFireExtension implements NovelFireImplementation {
       }
     });
 
-    const hasNextPage = !!$(".pagination .page-item.active + .page-item").length;
+    const hasNextPage =
+      !!$('a[rel="next"]').length || !!$(".pagination .page-item.active + .page-item:not(.disabled)").length;
 
     return {
       items,
@@ -451,6 +472,26 @@ export class NovelFireExtension implements NovelFireImplementation {
 
     const origin = currentUrl.match(/^(https?:\/\/[^/]+)/i)?.[1] ?? baseUrl;
     return target.startsWith("/") ? `${origin}${target}` : `${origin}/${target}`;
+  }
+
+  // Turns "Weak to Strong, Cultivation" into the site's tag IDs via its autocomplete endpoint.
+  async resolveTagIds(names: string): Promise<string[]> {
+    const ids: string[] = [];
+    for (const name of names.split(",").map((n) => n.trim()).filter(Boolean)) {
+      const [, data] = await this.scheduleRequest({
+        url: `${baseUrl}/ajax/getTags?term=${encodeURIComponent(name)}`,
+        method: "GET",
+      });
+      let tags: NovelFireTag[] = [];
+      try {
+        tags = (JSON.parse(Application.arrayBufferToUTF8String(data)) as NovelFireTagResult).data ?? [];
+      } catch {
+        continue;
+      }
+      const match = tags.find((t) => t.name.toLowerCase() === name.toLowerCase()) ?? tags[0];
+      if (match && !ids.includes(String(match.id))) ids.push(String(match.id));
+    }
+    return ids;
   }
 
   getMangaShareUrl(mangaId: string): string {
